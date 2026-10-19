@@ -17,34 +17,6 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Genera el System Prompt contextualizado para la clínica odontológica
-   */
-  private getSystemPrompt(): string {
-    return `
-Eres "Sofía", la asistente virtual y coordinadora de citas experta de "${CLINIC_KNOWLEDGE_BASE.nombreClinica}" en Medellín (El Poblado).
-Tu objetivo es brindar una atención cálida, profesional y empática, resolver dudas sobre tratamientos dentales modernos y coordinar/agendar citas de valoración directamente para el equipo de especialistas.
-
-INFORMACIÓN DE LA CLÍNICA:
-- Ubicación: ${CLINIC_KNOWLEDGE_BASE.ubicacion}
-- Horarios: ${CLINIC_KNOWLEDGE_BASE.horariosAtencion}
-- Ventajas competitivas: Alta tecnología 3D, manufactura propia con certificación médica (ahorro >50% frente a multinacionales), entregas exprés (48-72 hrs) y enfoque en pacientes locales y turismo dental (USA/Canadá/Europa).
-
-TRATAMIENTOS PRINCIPALES:
-${CLINIC_KNOWLEDGE_BASE.tratamientos.map(t => `- ${t.nombre}: ${t.descripcion} (Inversión aprox: ${t.precioAproximadoCop} / ${t.precioUsd})`).join('\n')}
-
-PAUTAS DE COMPORTAMIENTO:
-1. IDIOMA Y TURISMO DENTAL: Si el usuario escribe en inglés o menciona que viaja a Medellín, responde fluidamente en inglés adaptando los tiempos de estadía y precios en USD. Si escribe en español, mantén un tono profesional, cercano y antioqueño formal.
-2. AGENDAMIENTO: Para agendar una cita necesitas:
-   - Nombre completo del paciente.
-   - Tratamiento o motivo de consulta.
-   - Fecha y hora preferida.
-   - Número de contacto WhatsApp.
-3. PREGUNTAS CLÍNICAS Complejas: Da orientación general preventiva, pero recuerda que el diagnóstico definitivo lo realiza el especialista tras el escaneo 3D en la clínica.
-4. LLAMADO A LA ACCIÓN (CTA): Termina tus respuestas guiando al paciente a dar el siguiente paso (ej: coordinar su horario de valoración o resolver su duda principal).
-    `.trim();
-  }
-
-  /**
    * Procesa el mensaje recibido de WhatsApp y decide la respuesta o acción
    */
   async processIncomingMessage(params: {
@@ -52,80 +24,84 @@ PAUTAS DE COMPORTAMIENTO:
     text: string;
     history?: ChatMessage[];
   }): Promise<{ replyText: string; actionExecuted?: string; retrievedSources?: string[] }> {
-    const { fromPhone, text, history = [] } = params;
-    const lowerText = text.toLowerCase();
+    const { fromPhone, text } = params;
+    const cleanText = text.trim();
+    const lowerText = cleanText.toLowerCase();
 
-    // 1. Consulta en la base documental RAG (cuidados, protocolos, preguntas específicas)
-    const relevantChunks = this.knowledge.searchRelevantChunks(text, 2);
-    const retrievedSources = relevantChunks.map(c => c.sourceFile);
+    // -------------------------------------------------------------
+    // 1. MANEJO EXCLUSIVO DE SELECCIÓN DE NÚMEROS (1, 2, 3, 4, 5, etc.)
+    // -------------------------------------------------------------
+    const isMenuSelection = (num: string, keywords: string[]) => {
+      return (
+        cleanText === num ||
+        lowerText === `opcion ${num}` ||
+        lowerText === `opción ${num}` ||
+        lowerText === `numero ${num}` ||
+        lowerText === `número ${num}` ||
+        keywords.some(k => lowerText === k)
+      );
+    };
 
-    // 2. Detección rápida de solicitud de horarios / disponibilidad
-    if (lowerText.includes('horario') || lowerText.includes('disponib') || lowerText.includes('cuando tienen cita') || lowerText.includes('available')) {
+    if (isMenuSelection('1', ['alineadores', 'alineador', 'ortodoncia invisible', 'invisalign'])) {
+      return {
+        replyText: `✨ *Opción 1: Alineadores Invisibles (Ortodoncia 3D)*\n\nEn Clínica Dental Digital Medellín fabricamos alineadores transparentes de grado médico con tecnología 3D (láminas Taglus / Zendura).\n\n• *Ahorro:* Más del 50% frente a marcas multinacionales tradicionales.\n• *Inversión:* Planificación 3D y Setup desde $160.000 COP. Tratamientos completos desde $1.800.000 COP.\n• *Ventajas:* Totalmente estéticos, removibles y cómodos.\n\n¿Te gustaría ver horarios para agendar tu escaneo intraoral 3D de valoración?`,
+        actionExecuted: 'option_aligners'
+      };
+    }
+
+    if (isMenuSelection('2', ['implantes', 'implante', 'cirugia guiada', 'cirugía guiada'])) {
+      return {
+        replyText: `🦷 *Opción 2: Implantes con Cirugía Guiada 3D*\n\nRealizamos la colocación de implantes mediante planificación computarizada fusionando tomografía CBCT y escaneo intraoral.\n\n• *Precisión:* Férula quirúrgica milimétrica que evita incisiones a mano alzada.\n• *Beneficios:* 70% menos dolor e inflamación postoperatoria, cicatrización acelerada y menor tiempo en el sillón.\n• *Inversión:* Guías quirúrgicas de precisión desde $180.000 COP.\n\n¿Cuentas con tomografía previa o deseas agendar tu cita de valoración presencial?`,
+        actionExecuted: 'option_implants'
+      };
+    }
+
+    if (isMenuSelection('3', ['cuidados', 'protocolos', 'protocolo'])) {
+      return {
+        replyText: `📋 *Opción 3: Cuidados y Protocolos Clínicos*\n\nContamos con protocolos especializados para:\n• Cuidados postoperatorios de implantes y extracciones (hielo, gasas, dieta blanda).\n• Higiene y mantenimiento de alineadores invisibles.\n• Uso y limpieza de placas de bruxismo.\n\n¿Sobre qué procedimiento en particular necesitas consultar las recomendaciones?`,
+        actionExecuted: 'option_protocols'
+      };
+    }
+
+    if (isMenuSelection('4', ['agendar', 'cita', 'citas', 'horario', 'horarios', 'disponibilidad'])) {
       const today = new Date().toISOString().split('T')[0];
       const slots = await this.calendar.getAvailableSlots(today);
       const slotsFormatted = slots.map(s => s.split('T')[1].substring(0, 5)).join(', ');
-      
-      const isEnglish = lowerText.includes('available') || lowerText.includes('appointment');
-      if (isEnglish) {
-        return {
-          replyText: `Hello! For our digital consultation at ${CLINIC_KNOWLEDGE_BASE.nombreClinica}, we currently have these upcoming slots: ${slotsFormatted}. What time works best for you, and could you please share your full name?`,
-          actionExecuted: 'query_calendar_slots',
-          retrievedSources
-        };
-      }
 
       return {
-        replyText: `¡Hola! Con mucho gusto. Para valoración en ${CLINIC_KNOWLEDGE_BASE.nombreClinica} contamos con los siguientes horarios próximos: ${slotsFormatted}.\n\n¿Cuál de estos te queda mejor y me regalas tu nombre completo para reservarte el espacio?`,
-        actionExecuted: 'query_calendar_slots',
-        retrievedSources
+        replyText: `📅 *Opción 4: Agendamiento de Citas*\n\nCon mucho gusto. Para valoración en nuestra sede de El Poblado (Cra 43A # 1-50, Torre Médica) tenemos los siguientes horarios próximos disponibles:\n\n👉 *${slotsFormatted}*\n\nPor favor indícanos:\n1. ¿Cuál hora te queda mejor?\n2. ¿Tu nombre completo para apartar el espacio?`,
+        actionExecuted: 'query_calendar_slots'
       };
     }
 
-    // 3. Detección de confirmación de cita (ej. "confirmar", "agendar", "mi nombre es ...")
-    if ((lowerText.includes('confirmo') || lowerText.includes('agendar') || lowerText.includes('reserva')) && lowerText.includes(':')) {
-      const result = await this.calendar.bookAppointment({
-        patientName: 'Paciente WhatsApp',
-        patientPhone: fromPhone,
-        treatment: 'Valoración Digital General',
-        dateTimeIso: new Date(Date.now() + 86400000).toISOString()
-      });
-
+    if (isMenuSelection('5', ['turismo', 'turismo dental', 'viaje', 'exterior'])) {
       return {
-        replyText: `¡Excelente! Hemos apartado tu cita preliminar en el sistema. ${result.details}\n\nTe esperamos en nuestra sede de El Poblado. Te enviaremos un recordatorio 24 horas antes por este mismo medio.`,
-        actionExecuted: 'booked_appointment',
-        retrievedSources
+        replyText: `✈️ *Opción 5: Turismo Dental y Pacientes Internacionales*\n\n¡Bienvenido a Medellín! Somos especialistas en coordinar tratamientos express para pacientes del exterior (USA, Canadá y Europa):\n\n• *Ahorro:* Entre el 60% y 70% comparado con precios en Norteamérica o Europa.\n• *Tiempos:* Entregas de alineadores o cirugía guiada en 3 a 5 días hábiles.\n• *Ubicación:* Sector exclusivo de El Poblado con convenios hoteleros.\n\nWe also provide full English assistance. Would you like to schedule an assessment or receive a personalized plan?`,
+        actionExecuted: 'option_tourism'
       };
     }
 
-    // 4. Si encontramos contexto en la base de conocimiento documental RAG (ej: cuidados postoperatorios, gasa, hielo, cirugia)
-    if (relevantChunks.length > 0 && (lowerText.includes('cuidado') || lowerText.includes('post') || lowerText.includes('sangr') || lowerText.includes('hielo') || lowerText.includes('comer') || lowerText.includes('dolor'))) {
+    // -------------------------------------------------------------
+    // 2. BÚSQUEDA EN BASE DE CONOCIMIENTO (RAG & FAQs)
+    // -------------------------------------------------------------
+    const relevantChunks = this.knowledge.searchRelevantChunks(cleanText, 2);
+    const retrievedSources = relevantChunks.map(c => c.sourceFile);
+
+    if (relevantChunks.length > 0) {
       const chunkContext = relevantChunks.map(c => c.content).join('\n\n');
       return {
-        replyText: `¡Hola! Con gusto te oriento sobre los cuidados según nuestro protocolo clínico:\n\n${chunkContext}\n\nAnte cualquier dolor anormal o duda urgente, nuestro equipo de soporte clínico está siempre a tu disposición. ¿Deseas consultar algo adicional?`,
+        replyText: `💡 *Información encontrada en nuestros protocolos clínicos:*\n\n${chunkContext}\n\n¿Te gustaría agendar una valoración o consultar algo adicional?`,
         actionExecuted: 'rag_retrieval',
         retrievedSources
       };
     }
 
-    // 5. Respuestas a tratamientos principales
-    if (lowerText.includes('alineador') || lowerText.includes('invisalign') || lowerText.includes('ortodoncia') || lowerText.includes('precio')) {
-      return {
-        replyText: `¡Hola! En ${CLINIC_KNOWLEDGE_BASE.nombreClinica} trabajamos con alineadores invisibles de tecnología digital 3D (láminas alemanas Taglus/Zendura de grado médico). \n\n🎯 Ventajas: Son imperceptibles, cómodos y al ser producidos localmente en Medellín ahorras más del 50% frente a sistemas multinacionales importados (tratamientos desde $1.800.000 COP).\n\n¿Te gustaría que agendemos tu escaneo intraoral 3D para evaluar tu caso esta semana?`,
-        retrievedSources
-      };
-    }
-
-    if (lowerText.includes('implante') || lowerText.includes('cirugia') || lowerText.includes('guia')) {
-      return {
-        replyText: `¡Hola! Realizamos implantes dentales mediante Cirugía Guiada por Computadora (fusión 3D de tomografía y escaneo). Esto permite una colocación precisa, sin cortes innecesarios y con una recuperación mucho más rápida.\n\n¿Cuentas con alguna radiografía o tomografía reciente, o prefieres agendar una cita de valoración presencial?`,
-        retrievedSources
-      };
-    }
-
-    // Saludo general / Bienvenida
+    // -------------------------------------------------------------
+    // 3. MENÚ PRINCIPAL DE BIENVENIDA (Fallback)
+    // -------------------------------------------------------------
     return {
-      replyText: `¡Hola! Bienvenido/a a ${CLINIC_KNOWLEDGE_BASE.nombreClinica}. Soy Sofía, tu asesora dental virtual.\n\nTe puedo ayudar con:\n1️⃣ Información y precios de Alineadores Invisibles\n2️⃣ Implantes con Cirugía Guiada 3D\n3️⃣ Cuidados y protocolos clínicos\n4️⃣ Agendar tu cita de valoración en El Poblado\n5️⃣ Información de turismo dental si vienes del exterior\n\n¿En qué podemos ayudarte hoy?`,
-      retrievedSources
+      replyText: `¡Hola! Bienvenido/a a Clínica Dental Digital Medellín. Soy Sofía, tu asesora dental virtual.\n\nEscribe el *número* o la opción que deseas consultar:\n\n1️⃣ Información y precios de Alineadores Invisibles\n2️⃣ Implantes con Cirugía Guiada 3D\n3️⃣ Cuidados y protocolos clínicos\n4️⃣ Agendar tu cita de valoración en El Poblado\n5️⃣ Información de turismo dental si vienes del exterior\n\n¿En qué podemos ayudarte hoy?`,
+      retrievedSources: []
     };
   }
 }

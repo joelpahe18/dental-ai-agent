@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dental AI Agent - Panel de Base de Conocimiento</title>
+  <style>
+    :root {
+      --primary: #0284c7;
+      --primary-dark: #0369a1;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --success: #16a34a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1rem; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    header { margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; }
+    h1 { font-size: 1.5rem; color: var(--primary-dark); }
+    .badge { background: #e0f2fe; color: var(--primary); padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    h2 { font-size: 1.15rem; margin-bottom: 1rem; }
+    label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-muted); }
+    input, textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; font-size: 0.95rem; margin-bottom: 1rem; }
+    textarea { height: 180px; font-family: monospace; resize: vertical; }
+    button { background: var(--primary); color: white; border: none; padding: 0.75rem 1.25rem; border-radius: 8px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: var(--primary-dark); }
+    .file-list { list-style: none; margin-top: 1rem; }
+    .file-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid var(--border); }
+    .file-item:last-child { border-bottom: none; }
+    .file-info { font-size: 0.9rem; }
+    .file-name { font-weight: 600; }
+    .file-meta { font-size: 0.8rem; color: var(--text-muted); }
+    .btn-delete { background: #fee2e2; color: #dc2626; padding: 0.35rem 0.65rem; border-radius: 6px; font-size: 0.8rem; }
+    .btn-delete:hover { background: #fca5a5; }
+    .simulator { margin-top: 1.5rem; }
+    .chat-box { height: 220px; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; overflow-y: auto; background: #fafafa; margin-bottom: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.9rem; }
+    .msg { padding: 0.5rem 0.75rem; border-radius: 8px; max-width: 80%; }
+    .msg-user { align-self: flex-end; background: var(--primary); color: white; }
+    .msg-bot { align-self: flex-start; background: #e2e8f0; color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>🦷 Gestor de Conocimiento & RAG</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Agente Dental IA - Atención y Protocolos Médicos</p>
+      </div>
+      <span class="badge">Puerto 3015 • En Línea</span>
+    </header>
+
+    <div class="grid">
+      <!-- Columna 1: Subir o redactar protocolo -->
+      <div class="card">
+        <h2>📄 Agregar Nuevo Protocolo / Documento</h2>
+        <form id="docForm">
+          <label>Nombre del Documento (ej. cuidados_alineadores.md)</label>
+          <input type="text" id="docName" placeholder="protocolo_limpieza.md" required>
+
+          <label>Contenido Clínico o Preguntas Frecuentes</label>
+          <textarea id="docContent" placeholder="Escribe aquí las pautas, precios especiales o recomendaciones médicas..." required></textarea>
+
+          <button type="submit">Guardar en Base de Conocimiento</button>
+        </form>
+      </div>
+
+      <!-- Columna 2: Documentos actuales y Simulador -->
+      <div>
+        <div class="card" style="margin-bottom: 1.5rem;">
+          <h2>📚 Documentos Activos en Memoria</h2>
+          <ul class="file-list" id="docList">
+            <li>Cargando documentos...</li>
+          </ul>
+        </div>
+
+        <div class="card simulator">
+          <h2>💬 Probar Agente con la Nueva Información</h2>
+          <div class="chat-box" id="chatBox">
+            <div class="msg msg-bot">Hola, soy Sofía. Hazme una pregunta clínica o sobre tratamientos para probar el conocimiento cargado.</div>
+          </div>
+          <form id="chatForm" style="display: flex; gap: 0.5rem;">
+            <input type="text" id="chatInput" placeholder="Ej: ¿Qué cuidados debo tener las primeras 24 horas?" style="margin-bottom: 0;" required>
+            <button type="submit">Enviar</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadDocuments() {
+      try {
+        const res = await fetch('/api/knowledge/documents');
+        const docs = await res.json();
+        const list = document.getElementById('docList');
+        list.innerHTML = '';
+
+        if (docs.length === 0) {
+          list.innerHTML = '<li style="color: var(--text-muted); font-size: 0.85rem;">No hay documentos adicionales aún.</li>';
+          return;
+        }
+
+        docs.forEach(doc => {
+          const li = document.createElement('li');
+          li.className = 'file-item';
+          li.innerHTML = `
+            <div class="file-info">
+              <div class="file-name">${doc.name}</div>
+              <div class="file-meta">${doc.sizeKb} KB • ${doc.chunksCount} fragmentos RAG</div>
+            </div>
+            <button class="btn-delete" onclick="deleteDoc('${doc.name}')">Eliminar</button>
+          `;
+          list.appendChild(li);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function deleteDoc(name) {
+      if (!confirm(`¿Deseas eliminar ${name}?`)) return;
+      await fetch(`/api/knowledge/documents/${name}`, { method: 'DELETE' });
+      loadDocuments();
+    }
+
+    document.getElementById('docForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('docName').value;
+      const content = document.getElementById('docContent').value;
+
+      await fetch('/api/knowledge/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: name, content })
+      });
+
+      alert('Documento guardado e indexado en el Agente.');
+      document.getElementById('docName').value = '';
+      document.getElementById('docContent').value = '';
+      loadDocuments();
+    });
+
+    document.getElementById('chatForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const chatBox = document.getElementById('chatBox');
+      chatBox.innerHTML += `<div class="msg msg-user">${text}</div>`;
+      input.value = '';
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+      const res = await fetch('/api/chat/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      });
+      const data = await res.json();
+
+      const reply = data.response?.replyText || 'Sin respuesta';
+      const sources = data.response?.retrievedSources?.length ? `<br><small style="opacity: 0.8;">📄 Fuente RAG: ${data.response.retrievedSources.join(', ')}</small>` : '';
+      chatBox.innerHTML += `<div class="msg msg-bot">${reply}${sources}</div>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+    });
+
+    loadDocuments();
+  </script>
+</body>
+</html>

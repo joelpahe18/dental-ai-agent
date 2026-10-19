@@ -1,5 +1,6 @@
 import { CLINIC_KNOWLEDGE_BASE } from '../knowledge/clinicData.js';
 import { CalendarService } from '../services/calendarService.js';
+import { KnowledgeManager } from '../services/knowledgeManager.js';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -8,9 +9,11 @@ export interface ChatMessage {
 
 export class AgentOrchestrator {
   private calendar: CalendarService;
+  public knowledge: KnowledgeManager;
 
   constructor() {
     this.calendar = new CalendarService();
+    this.knowledge = new KnowledgeManager();
   }
 
   /**
@@ -48,11 +51,15 @@ PAUTAS DE COMPORTAMIENTO:
     fromPhone: string;
     text: string;
     history?: ChatMessage[];
-  }): Promise<{ replyText: string; actionExecuted?: string }> {
+  }): Promise<{ replyText: string; actionExecuted?: string; retrievedSources?: string[] }> {
     const { fromPhone, text, history = [] } = params;
     const lowerText = text.toLowerCase();
 
-    // 1. Detección rápida de solicitud de horarios / disponibilidad
+    // 1. Consulta en la base documental RAG (cuidados, protocolos, preguntas específicas)
+    const relevantChunks = this.knowledge.searchRelevantChunks(text, 2);
+    const retrievedSources = relevantChunks.map(c => c.sourceFile);
+
+    // 2. Detección rápida de solicitud de horarios / disponibilidad
     if (lowerText.includes('horario') || lowerText.includes('disponib') || lowerText.includes('cuando tienen cita') || lowerText.includes('available')) {
       const today = new Date().toISOString().split('T')[0];
       const slots = await this.calendar.getAvailableSlots(today);
@@ -62,19 +69,20 @@ PAUTAS DE COMPORTAMIENTO:
       if (isEnglish) {
         return {
           replyText: `Hello! For our digital consultation at ${CLINIC_KNOWLEDGE_BASE.nombreClinica}, we currently have these upcoming slots: ${slotsFormatted}. What time works best for you, and could you please share your full name?`,
-          actionExecuted: 'query_calendar_slots'
+          actionExecuted: 'query_calendar_slots',
+          retrievedSources
         };
       }
 
       return {
         replyText: `¡Hola! Con mucho gusto. Para valoración en ${CLINIC_KNOWLEDGE_BASE.nombreClinica} contamos con los siguientes horarios próximos: ${slotsFormatted}.\n\n¿Cuál de estos te queda mejor y me regalas tu nombre completo para reservarte el espacio?`,
-        actionExecuted: 'query_calendar_slots'
+        actionExecuted: 'query_calendar_slots',
+        retrievedSources
       };
     }
 
-    // 2. Detección de confirmación de cita (ej. "confirmar", "agendar", "mi nombre es ...")
+    // 3. Detección de confirmación de cita (ej. "confirmar", "agendar", "mi nombre es ...")
     if ((lowerText.includes('confirmo') || lowerText.includes('agendar') || lowerText.includes('reserva')) && lowerText.includes(':')) {
-      // Intento básico de agendamiento
       const result = await this.calendar.bookAppointment({
         patientName: 'Paciente WhatsApp',
         patientPhone: fromPhone,
@@ -84,26 +92,40 @@ PAUTAS DE COMPORTAMIENTO:
 
       return {
         replyText: `¡Excelente! Hemos apartado tu cita preliminar en el sistema. ${result.details}\n\nTe esperamos en nuestra sede de El Poblado. Te enviaremos un recordatorio 24 horas antes por este mismo medio.`,
-        actionExecuted: 'booked_appointment'
+        actionExecuted: 'booked_appointment',
+        retrievedSources
       };
     }
 
-    // 3. Respuesta estructurada del Agente Asistente Inteligente
+    // 4. Si encontramos contexto en la base de conocimiento documental RAG (ej: cuidados postoperatorios, gasa, hielo, cirugia)
+    if (relevantChunks.length > 0 && (lowerText.includes('cuidado') || lowerText.includes('post') || lowerText.includes('sangr') || lowerText.includes('hielo') || lowerText.includes('comer') || lowerText.includes('dolor'))) {
+      const chunkContext = relevantChunks.map(c => c.content).join('\n\n');
+      return {
+        replyText: `¡Hola! Con gusto te oriento sobre los cuidados según nuestro protocolo clínico:\n\n${chunkContext}\n\nAnte cualquier dolor anormal o duda urgente, nuestro equipo de soporte clínico está siempre a tu disposición. ¿Deseas consultar algo adicional?`,
+        actionExecuted: 'rag_retrieval',
+        retrievedSources
+      };
+    }
+
+    // 5. Respuestas a tratamientos principales
     if (lowerText.includes('alineador') || lowerText.includes('invisalign') || lowerText.includes('ortodoncia') || lowerText.includes('precio')) {
       return {
-        replyText: `¡Hola! En ${CLINIC_KNOWLEDGE_BASE.nombreClinica} trabajamos con alineadores invisibles de tecnología digital 3D (láminas alemanas Taglus/Zendura de grado médico). \n\n🎯 Ventajas: Son imperceptibles, cómodos y al ser producidos localmente en Medellín ahorras más del 50% frente a sistemas multinacionales importados (tratamientos desde $1.800.000 COP).\n\n¿Te gustaría que agendemos tu escaneo intraoral 3D para evaluar tu caso esta semana?`
+        replyText: `¡Hola! En ${CLINIC_KNOWLEDGE_BASE.nombreClinica} trabajamos con alineadores invisibles de tecnología digital 3D (láminas alemanas Taglus/Zendura de grado médico). \n\n🎯 Ventajas: Son imperceptibles, cómodos y al ser producidos localmente en Medellín ahorras más del 50% frente a sistemas multinacionales importados (tratamientos desde $1.800.000 COP).\n\n¿Te gustaría que agendemos tu escaneo intraoral 3D para evaluar tu caso esta semana?`,
+        retrievedSources
       };
     }
 
     if (lowerText.includes('implante') || lowerText.includes('cirugia') || lowerText.includes('guia')) {
       return {
-        replyText: `¡Hola! Realizamos implantes dentales mediante Cirugía Guiada por Computadora (fusión 3D de tomografía y escaneo). Esto permite una colocación precisa, sin cortes innecesarios y con una recuperación mucho más rápida.\n\n¿Cuentas con alguna radiografía o tomografía reciente, o prefieres agendar una cita de valoración presencial?`
+        replyText: `¡Hola! Realizamos implantes dentales mediante Cirugía Guiada por Computadora (fusión 3D de tomografía y escaneo). Esto permite una colocación precisa, sin cortes innecesarios y con una recuperación mucho más rápida.\n\n¿Cuentas con alguna radiografía o tomografía reciente, o prefieres agendar una cita de valoración presencial?`,
+        retrievedSources
       };
     }
 
     // Saludo general / Bienvenida
     return {
-      replyText: `¡Hola! Bienvenido/a a ${CLINIC_KNOWLEDGE_BASE.nombreClinica}. Soy Sofía, tu asesora dental virtual.\n\nTe puedo ayudar con:\n1️⃣ Información y precios de Alineadores Invisibles\n2️⃣ Implantes con Cirugía Guiada 3D\n3️⃣ Agendar tu cita de valoración en El Poblado\n4️⃣ Información de turismo dental si vienes del exterior\n\n¿En qué podemos ayudarte hoy?`
+      replyText: `¡Hola! Bienvenido/a a ${CLINIC_KNOWLEDGE_BASE.nombreClinica}. Soy Sofía, tu asesora dental virtual.\n\nTe puedo ayudar con:\n1️⃣ Información y precios de Alineadores Invisibles\n2️⃣ Implantes con Cirugía Guiada 3D\n3️⃣ Cuidados y protocolos clínicos\n4️⃣ Agendar tu cita de valoración en El Poblado\n5️⃣ Información de turismo dental si vienes del exterior\n\n¿En qué podemos ayudarte hoy?`,
+      retrievedSources
     };
   }
 }

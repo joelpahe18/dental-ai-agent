@@ -2,15 +2,30 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { AgentOrchestrator } from './agent/orchestrator.js';
+import { WhatsAppConnector, WhatsAppMode } from './services/whatsappConnector.js';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3015;
+
 const agent = new AgentOrchestrator();
+const waConnector = new WhatsAppConnector();
+
+// Configurar el callback de mensajes para cuando lleguen por Baileys (QR)
+waConnector.setOnMessage(async (fromJid, text) => {
+  const cleanPhone = fromJid.split('@')[0];
+  const result = await agent.processIncomingMessage({
+    fromPhone: cleanPhone,
+    text
+  });
+  return result.replyText;
+});
+
+// Inicializar el modo inicial (por defecto Pruebas QR)
+waConnector.setMode('qr_testing').catch(console.error);
 
 app.use(express.json());
-// Servir archivos estáticos del panel web
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
 // Endpoint de salud
@@ -18,26 +33,47 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({
     status: 'online',
     service: 'Dental AI Agent - WhatsApp Scheduling & RAG',
+    whatsappMode: waConnector.getMode(),
     timestamp: new Date().toISOString()
   });
 });
 
-// Redireccionar raíz al panel administrativo
 app.get('/', (req: Request, res: Response) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'admin.html'));
 });
 
 // ==========================================
-// API DEL MÓDULO DE GESTIÓN DE CONOCIMIENTO
+// CONTROL DE MODO WHATSAPP (PRUEBAS VS PRODUCCIÓN)
 // ==========================================
 
-// 1. Listar documentos cargados en la base de conocimiento
+app.get('/api/whatsapp/status', (req: Request, res: Response) => {
+  res.json(waConnector.getStatus());
+});
+
+app.post('/api/whatsapp/mode', async (req: Request, res: Response) => {
+  const { mode } = req.body as { mode: WhatsAppMode };
+  if (mode !== 'qr_testing' && mode !== 'meta_production') {
+    res.status(400).json({ error: 'Modo inválido. Usar qr_testing o meta_production' });
+    return;
+  }
+  const result = await waConnector.setMode(mode);
+  res.json(result);
+});
+
+app.post('/api/whatsapp/reset', async (req: Request, res: Response) => {
+  await waConnector.disconnectAndReset();
+  res.json({ success: true, message: 'Sesión de WhatsApp cerrada. Generando nuevo código QR.' });
+});
+
+// ==========================================
+// API DE BASE DE CONOCIMIENTO (RAG)
+// ==========================================
+
 app.get('/api/knowledge/documents', (req: Request, res: Response) => {
   const docs = agent.knowledge.listDocuments();
   res.json(docs);
 });
 
-// 2. Guardar un nuevo documento/protocolo y re-indexar al vuelo
 app.post('/api/knowledge/documents', (req: Request, res: Response) => {
   const { fileName, content } = req.body;
   if (!fileName || !content) {
@@ -49,7 +85,6 @@ app.post('/api/knowledge/documents', (req: Request, res: Response) => {
   res.json({ success: true, message: `Documento ${fileName} guardado e indexado con éxito.` });
 });
 
-// 3. Eliminar un documento de la base de conocimiento
 app.delete('/api/knowledge/documents/:name', (req: Request, res: Response) => {
   const name = String(req.params.name);
   const deleted = agent.knowledge.deleteDocument(name);
@@ -61,7 +96,7 @@ app.delete('/api/knowledge/documents/:name', (req: Request, res: Response) => {
 });
 
 // ==========================================
-// WEBHOOK META WHATSAPP CLOUD API
+// MODO PRODUCCIÓN: WEBHOOK META CLOUD API
 // ==========================================
 
 app.get('/webhook', (req: Request, res: Response) => {
@@ -83,6 +118,12 @@ app.post('/webhook', async (req: Request, res: Response) => {
   try {
     const body = req.body;
 
+    if (waConnector.getMode() !== 'meta_production') {
+      console.log('ℹ️ Webhook de Meta recibido, pero el sistema está en modo Pruebas (QR). Ignorando.');
+      res.sendStatus(200);
+      return;
+    }
+
     if (body.object === 'whatsapp_business_account') {
       const entry = body.entry?.[0];
       const changes = entry?.changes?.[0];
@@ -93,14 +134,15 @@ app.post('/webhook', async (req: Request, res: Response) => {
         const fromPhone = message.from;
         const textBody = message.text.body;
 
-        console.log(`📩 Mensaje recibido de ${fromPhone}: "${textBody}"`);
+        console.log(`📩 [Meta API] Mensaje de ${fromPhone}: "${textBody}"`);
 
         const result = await agent.processIncomingMessage({
           fromPhone,
           text: textBody
         });
 
-        console.log(`🤖 Respuesta generada: "${result.replyText}"`);
+        console.log(`🤖 [Meta API] Respuesta: "${result.replyText}"`);
+        // Aquí se despacha por axios/fetch a https://graph.facebook.com/v21.0/... si están las credenciales
       }
 
       res.sendStatus(200);
@@ -129,5 +171,5 @@ app.post('/api/chat/simulate', async (req: Request, res: Response) => {
 
 app.listen(port, () => {
   console.log(`🚀 Dental AI Agent activo en el puerto ${port}`);
-  console.log(`📊 Panel web de Base de Conocimiento disponible en: http://localhost:${port}/`);
+  console.log(`📊 Panel web administrativo disponible en: http://localhost:${port}/`);
 });

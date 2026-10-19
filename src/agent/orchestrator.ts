@@ -22,7 +22,7 @@ export class AgentOrchestrator {
 
   private getSession(phone: string): UserSession {
     let session = this.sessions.get(phone);
-    if (!session || Date.now() - session.lastInteraction > 30 * 60 * 1000) {
+    if (!session || Date.now() - session.lastInteraction > 60 * 60 * 1000) {
       session = {
         stage: 'idle',
         lastInteraction: Date.now()
@@ -31,6 +31,30 @@ export class AgentOrchestrator {
     }
     session.lastInteraction = Date.now();
     return session;
+  }
+
+  /**
+   * Extrae la hora y el nombre si vienen juntos o separados en el mensaje
+   */
+  private extractTimeAndName(text: string): { time?: string; name?: string } {
+    let time: string | undefined;
+    let name: string | undefined;
+
+    // Detectar patrones de hora: "9 am", "9:00", "11:00 am", "2 pm", "14:30", "a las 9", etc.
+    const timeRegex = /\b([01]?[0-9]|2[0-3])(:[0-5][0-9])?\s*(am|pm|a\.m\.|p\.m\.)?\b|\b(a las\s+[0-9]+(:[0-9]+)?)\b/i;
+    const timeMatch = text.match(timeRegex);
+    if (timeMatch) {
+      time = timeMatch[0].trim();
+    }
+
+    // Detectar patrones de nombre: "me llamo Joel Payares", "mi nombre es Joel", "soy Joel Payares", etc.
+    const nameRegex = /(?:me llamo|mi nombre es|soy|nombre:\s*|paciente:\s*)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,30})/i;
+    const nameMatch = text.match(nameRegex);
+    if (nameMatch) {
+      name = nameMatch[1].trim();
+    }
+
+    return { time, name };
   }
 
   /**
@@ -45,9 +69,71 @@ export class AgentOrchestrator {
     const lowerText = cleanText.toLowerCase();
     const session = this.getSession(fromPhone);
 
+    const { time: extractedTime, name: extractedName } = this.extractTimeAndName(cleanText);
+
     // -------------------------------------------------------------
-    // FLUJO CONVERSACIONAL CON ESTADOS (MEMORIA)
+    // 1. MANEJO INTELIGENTE: SI EL USUARIO ENVIÓ HORA Y NOMBRE JUNTOS
+    // (Ejemplo: "9 am, me llamo Joel Payares")
     // -------------------------------------------------------------
+    if (extractedTime && extractedName) {
+      session.selectedTimeSlot = extractedTime;
+      session.patientName = extractedName;
+      session.stage = 'idle';
+
+      const today = new Date().toISOString().split('T')[0];
+      const treatment = session.treatmentOfInterest || 'Valoración Odontológica Digital';
+
+      const result = await this.calendar.bookAppointment({
+        patientName: session.patientName,
+        patientPhone: fromPhone,
+        treatment: treatment,
+        dateTimeIso: `${today}T09:00:00`
+      });
+
+      return {
+        replyText: `✅ *¡Cita Confirmada con Éxito!*\n\n• *Paciente:* ${session.patientName}\n• *Tratamiento:* ${treatment}\n• *Hora apartada:* ${session.selectedTimeSlot}\n• *Sede:* El Poblado, Cra 43A # 1-50, Torre Médica\n\n${result.details}\n\nTe enviaremos un recordatorio 24 horas antes por este medio. ¿Tienes alguna duda antes de tu visita?`,
+        actionExecuted: 'booked_appointment'
+      };
+    }
+
+    // -------------------------------------------------------------
+    // 2. ESTADOS DE ESPERA DE DATOS (EMBUDO CONVERSACIONAL)
+    // -------------------------------------------------------------
+
+    // Si estamos esperando hora y el usuario la provee:
+    if (session.stage === 'awaiting_time_selection') {
+      if (extractedTime) {
+        session.selectedTimeSlot = extractedTime;
+        session.stage = 'awaiting_patient_name';
+        return {
+          replyText: `Perfecto, apartaremos tu espacio a las *${extractedTime}*.\n\nPor favor, ¿me indicas tu *nombre y apellido completo* para registrar la cita en el sistema?`,
+          actionExecuted: 'time_slot_selected'
+        };
+      }
+    }
+
+    // Si estamos esperando nombre y el usuario lo envía:
+    if (session.stage === 'awaiting_patient_name') {
+      const candidateName = extractedName || cleanText;
+      session.patientName = candidateName;
+      session.stage = 'idle';
+
+      const today = new Date().toISOString().split('T')[0];
+      const treatment = session.treatmentOfInterest || 'Valoración Odontológica Digital';
+      const timeSlot = session.selectedTimeSlot || '09:00 AM';
+
+      const result = await this.calendar.bookAppointment({
+        patientName: session.patientName,
+        patientPhone: fromPhone,
+        treatment: treatment,
+        dateTimeIso: `${today}T09:00:00`
+      });
+
+      return {
+        replyText: `✅ *¡Cita Confirmada con Éxito!*\n\n• *Paciente:* ${session.patientName}\n• *Tratamiento:* ${treatment}\n• *Hora apartada:* ${timeSlot}\n• *Sede:* El Poblado, Cra 43A # 1-50, Torre Médica\n\n${result.details}\n\nTe enviaremos un recordatorio 24 horas antes por este medio. ¿Tienes alguna pregunta antes de visitarnos?`,
+        actionExecuted: 'booked_appointment'
+      };
+    }
 
     // Si el usuario responde afirmativamente ("sí", "claro", "me gustaría ver horarios", "dale")
     const isAffirmative = [
@@ -55,7 +141,6 @@ export class AgentOrchestrator {
       'me gustaría', 'ver horarios', 'quiero', 'yes', 'ok', 'bueno'
     ].some(w => lowerText === w || lowerText.startsWith(w + ' '));
 
-    // Si estaba viendo información de un tratamiento y responde que sí a ver horarios:
     if (session.stage === 'idle' && isAffirmative && session.treatmentOfInterest) {
       const today = new Date().toISOString().split('T')[0];
       const slots = await this.calendar.getAvailableSlots(today);
@@ -68,47 +153,8 @@ export class AgentOrchestrator {
       };
     }
 
-    // Si estamos esperando que seleccione una hora (ej: "11:00", "a las 11", "9:00", "2:30", etc.)
-    if (session.stage === 'awaiting_time_selection') {
-      // Detectar formato de hora o selección
-      const timeMatch = cleanText.match(/\b([01]?[0-9]|2[0-3])(:[0-5][0-9])?\b/);
-      if (timeMatch || lowerText.includes('mañana') || lowerText.includes('tarde') || lowerText.includes('primera')) {
-        session.selectedTimeSlot = cleanText;
-        session.stage = 'awaiting_patient_name';
-        return {
-          replyText: `Perfecto, apartaremos tu espacio a las *${cleanText}*.\n\nPor favor, ¿me indicas tu *nombre y apellido completo* para registrar la cita en el sistema?`,
-          actionExecuted: 'time_slot_selected'
-        };
-      }
-    }
-
-    // Si estamos esperando el nombre del paciente para confirmar la cita en el calendario
-    if (session.stage === 'awaiting_patient_name') {
-      session.patientName = cleanText;
-      const today = new Date().toISOString().split('T')[0];
-      const appointmentTime = `${today}T11:00:00`; // hora estimada o asignada
-
-      const result = await this.calendar.bookAppointment({
-        patientName: session.patientName,
-        patientPhone: fromPhone,
-        treatment: session.treatmentOfInterest || 'Valoración Odontológica Digital',
-        dateTimeIso: appointmentTime
-      });
-
-      const confirmedTreatment = session.treatmentOfInterest || 'Valoración Digital';
-      const confirmedTime = session.selectedTimeSlot || 'horario seleccionado';
-
-      // Reiniciar estado
-      session.stage = 'idle';
-
-      return {
-        replyText: `✅ *¡Cita Confirmada con Éxito!*\n\n• *Paciente:* ${session.patientName}\n• *Tratamiento:* ${confirmedTreatment}\n• *Hora apartada:* ${confirmedTime}\n• *Sede:* El Poblado, Cra 43A # 1-50, Torre Médica\n\n${result.details}\n\nTe enviaremos un recordatorio 24 horas antes por este medio. ¿Tienes alguna pregunta previa a tu visita?`,
-        actionExecuted: 'booked_appointment'
-      };
-    }
-
     // -------------------------------------------------------------
-    // SELECCIÓN DE OPCIONES DEL MENÚ (1, 2, 3, 4, 5)
+    // 3. SELECCIÓN DE OPCIONES DEL MENÚ (1, 2, 3, 4, 5)
     // -------------------------------------------------------------
     const isMenuSelection = (num: string, keywords: string[]) => {
       return (
@@ -153,7 +199,7 @@ export class AgentOrchestrator {
       session.treatmentOfInterest = session.treatmentOfInterest || 'Valoración General';
 
       return {
-        replyText: `📅 *Opción 4: Agendamiento de Citas*\n\nCon mucho gusto. Para valoración en nuestra sede de El Poblado (Cra 43A # 1-50, Torre Médica) tenemos los siguientes horarios próximos disponibles:\n\n👉 *${slotsFormatted}*\n\n¿Cuál hora te queda mejor?`,
+        replyText: `📅 *Opción 4: Agendamiento de Citas*\n\nCon mucho gusto. Para valoración en nuestra sede de El Poblado (Cra 43A # 1-50, Torre Médica) tenemos los siguientes horarios próximos disponibles:\n\n👉 *${slotsFormatted}*\n\nPor favor indícanos:\n1. ¿Cuál hora te queda mejor? (ej: 09:00 am)\n2. ¿Tu nombre completo para apartar el espacio?`,
         actionExecuted: 'query_calendar_slots'
       };
     }
@@ -166,7 +212,7 @@ export class AgentOrchestrator {
     }
 
     // -------------------------------------------------------------
-    // BÚSQUEDA EN BASE DE CONOCIMIENTO (RAG & FAQs)
+    // 4. BÚSQUEDA EN BASE DE CONOCIMIENTO (RAG & FAQs)
     // -------------------------------------------------------------
     const relevantChunks = this.knowledge.searchRelevantChunks(cleanText, 2);
     const retrievedSources = relevantChunks.map(c => c.sourceFile);
@@ -181,7 +227,7 @@ export class AgentOrchestrator {
     }
 
     // -------------------------------------------------------------
-    // MENÚ PRINCIPAL (Fallback)
+    // 5. MENÚ PRINCIPAL (Fallback)
     // -------------------------------------------------------------
     return {
       replyText: `¡Hola! Bienvenido/a a Clínica Dental Digital Medellín. Soy Sofía, tu asesora dental virtual.\n\nEscribe el *número* o la opción que deseas consultar:\n\n1️⃣ Información y precios de Alineadores Invisibles\n2️⃣ Implantes con Cirugía Guiada 3D\n3️⃣ Cuidados y protocolos clínicos\n4️⃣ Agendar tu cita de valoración en El Poblado\n5️⃣ Información de turismo dental si vienes del exterior\n\n¿En qué podemos ayudarte hoy?`,
